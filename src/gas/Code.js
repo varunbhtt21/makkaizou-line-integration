@@ -28,46 +28,62 @@ const ERROR_TYPES = {
  */
 function doPost(e) {
   try {
-    // Set CORS headers for the preflight request
-    if (e.postData.contents === undefined) {
+    // Handle preflight requests immediately
+    if (e.postData === undefined || e.postData.contents === undefined) {
       return createCORSResponse();
     }
     
-    // Log the raw request for debugging
-    logDebug('Received webhook', e);
+    // For webhook verification, respond quickly first, then process
+    const response = createCORSResponse(200, 'OK');
     
-    // Validate the signature
-    if (!validateSignature(e)) {
-      logError(ERROR_TYPES.VALIDATION_ERROR, 'Invalid signature', { payload: e.postData.contents });
-      return createCORSResponse(401, 'Invalid signature');
+    // Process the webhook asynchronously
+    try {
+      // Log the raw request for debugging
+      logDebug('Received webhook', e);
+      
+      // Validate the signature
+      if (!validateSignature(e)) {
+        logError(ERROR_TYPES.VALIDATION_ERROR, 'Invalid signature', { payload: e.postData.contents });
+        // Still return 200 to LINE but log the error
+        return response;
+      }
+      
+      // Parse the webhook data
+      const webhookData = JSON.parse(e.postData.contents);
+      
+      // Process each event in the webhook
+      if (webhookData.events && webhookData.events.length > 0) {
+        webhookData.events.forEach(event => {
+          try {
+            processEvent(event);
+          } catch (eventError) {
+            logError(
+              ERROR_TYPES.PROCESSING_ERROR, 
+              `Error processing event: ${eventError.message}`, 
+              { event: JSON.stringify(event) }
+            );
+          }
+        });
+      }
+    } catch (processingError) {
+      // Log the error but still return success to LINE
+      logError(
+        ERROR_TYPES.PROCESSING_ERROR,
+        `Error processing webhook: ${processingError.message}`,
+        { stack: processingError.stack }
+      );
     }
     
-    // Parse the webhook data
-    const webhookData = JSON.parse(e.postData.contents);
-    
-    // Process each event in the webhook
-    webhookData.events.forEach(event => {
-      try {
-        processEvent(event);
-      } catch (eventError) {
-        logError(
-          ERROR_TYPES.PROCESSING_ERROR, 
-          `Error processing event: ${eventError.message}`, 
-          { event: JSON.stringify(event) }
-        );
-      }
-    });
-    
-    // Return success response with CORS headers
-    return createCORSResponse(200, 'OK');
+    // Always return 200 OK to LINE to prevent retries
+    return response;
   } catch (error) {
-    // Log the error and return error response
+    // Log the error and return success anyway to prevent LINE retries
     logError(
       ERROR_TYPES.UNKNOWN_ERROR, 
       `Unhandled error in doPost: ${error.message}`, 
       { stack: error.stack }
     );
-    return createCORSResponse(500, 'Internal server error');
+    return createCORSResponse(200, 'OK');
   }
 }
 
@@ -87,13 +103,10 @@ function doGet(e) {
  * @return {Object} - The response object
  */
 function createCORSResponse(code = 200, message = '') {
-  // Create the response content
-  const response = ContentService.createTextOutput(
-    JSON.stringify({ status: code, message: message })
-  );
+  // Create a simple text response for maximum reliability
+  const response = ContentService.createTextOutput(message || 'OK');
   
-  // Set MIME type and CORS headers
-  response.setMimeType(ContentService.MimeType.JSON);
+  // Set CORS headers
   response.setHeader('Access-Control-Allow-Origin', '*');
   response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
