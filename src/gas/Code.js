@@ -147,15 +147,99 @@ function processEvent(event) {
     return;
   }
   
-  // Log that we're processing a message with a mention
-  logInfo('Processing message with bot mention', { 
-    groupId: event.source.groupId,
-    userId: event.source.userId,
-    message: event.message.text
-  });
-  
-  // TODO: Process the message and send to Makkaizou API
-  // This will be implemented in Phase 2
+  try {
+    // Show loading indicator if enabled
+    if (event.replyToken) {
+      showLoadingIndicator(event.replyToken);
+    }
+    
+    // Get source information
+    const sourceType = event.source.type; // 'user', 'group', or 'room'
+    const userId = event.source.userId;
+    const groupId = event.source.groupId || event.source.roomId || userId; // Use userId as fallback for direct messages
+    
+    // Get or create a talk_id for this conversation
+    const talkId = getTalkId(groupId, userId);
+    
+    // Get user profile information for metadata
+    let userProfile = null;
+    if (sourceType === 'user') {
+      userProfile = getUserProfile(userId);
+    } else if (sourceType === 'group' && groupId) {
+      userProfile = getGroupMemberProfile(groupId, userId);
+    }
+    
+    // Prepare metadata
+    const metadata = {
+      source_type: sourceType,
+      user_id: userId,
+      group_id: groupId,
+      user_name: userProfile ? userProfile.displayName : 'Unknown User',
+      message_id: event.message.id,
+      timestamp: event.timestamp
+    };
+    
+    // Extract the actual message (remove the bot mention)
+    const botName = getConfigValue('bot_name');
+    const mentionText = `@${botName}`;
+    let messageText = event.message.text;
+    
+    // Remove the mention from the message
+    if (botName && messageText.includes(mentionText)) {
+      messageText = messageText.replace(mentionText, '').trim();
+    }
+    
+    // Log the processed message
+    logInfo('Sending message to Makkaizou', {
+      groupId: groupId,
+      userId: userId,
+      message: messageText,
+      talkId: talkId
+    });
+    
+    // Send the message to Makkaizou API
+    const makkaizouResponse = sendToMakkaizou(talkId, messageText, metadata);
+    
+    // Format the response for LINE
+    const lineMessages = formatMakkaizouResponse(makkaizouResponse);
+    
+    // Reply to the message
+    if (event.replyToken && lineMessages.length > 0) {
+      const replyResponse = replyMessage(event.replyToken, lineMessages);
+      
+      // Log the successful reply
+      logInfo('Replied to message', {
+        groupId: groupId,
+        userId: userId,
+        message: messageText,
+        response: makkaizouResponse.response,
+        processing_time: makkaizouResponse.processingTime
+      });
+    }
+  } catch (error) {
+    logError(
+      ERROR_TYPES.PROCESSING_ERROR,
+      `Error processing message: ${error.message}`,
+      { 
+        event: JSON.stringify(event),
+        stack: error.stack
+      }
+    );
+    
+    // Send an error message if we have a reply token
+    if (event.replyToken) {
+      try {
+        const errorMessage = createTextMessage('Sorry, I encountered an error while processing your message. Please try again later.');
+        replyMessage(event.replyToken, [errorMessage]);
+      } catch (replyError) {
+        logError(
+          ERROR_TYPES.API_ERROR,
+          `Error sending error message: ${replyError.message}`,
+          { originalError: error.message }
+        );
+      }
+    }
+  }
 }
 
 /**
@@ -232,9 +316,23 @@ function isBotMentioned(message) {
   
   // Check if the message text contains @botName
   const mentionText = `@${botName}`;
-  return message.text.includes(mentionText);
   
-  // TODO: In Phase 2, enhance this to use the mention property from LINE API
+  // Check for mentions in the text
+  if (message.text.includes(mentionText)) {
+    return true;
+  }
+  
+  // Check for mentions in the mention property (LINE API v2)
+  if (message.mention && message.mention.mentionees) {
+    // Check if any mentionee has the bot's name
+    for (const mentionee of message.mention.mentionees) {
+      if (mentionee.type === 'user' && mentionee.userId === getConfigValue('line_bot_user_id')) {
+        return true;
+      }
+    }
+  }
+  
+  return false;
 }
 
 // --- Spreadsheet Utility Functions ---
