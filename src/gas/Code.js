@@ -28,13 +28,18 @@ const ERROR_TYPES = {
  */
 function doPost(e) {
   try {
+    // Set CORS headers for the preflight request
+    if (e.postData.contents === undefined) {
+      return createCORSResponse();
+    }
+    
     // Log the raw request for debugging
     logDebug('Received webhook', e);
     
     // Validate the signature
     if (!validateSignature(e)) {
       logError(ERROR_TYPES.VALIDATION_ERROR, 'Invalid signature', { payload: e.postData.contents });
-      return createResponse(401, 'Invalid signature');
+      return createCORSResponse(401, 'Invalid signature');
     }
     
     // Parse the webhook data
@@ -53,8 +58,8 @@ function doPost(e) {
       }
     });
     
-    // Return success response
-    return createResponse(200, 'OK');
+    // Return success response with CORS headers
+    return createCORSResponse(200, 'OK');
   } catch (error) {
     // Log the error and return error response
     logError(
@@ -62,8 +67,48 @@ function doPost(e) {
       `Unhandled error in doPost: ${error.message}`, 
       { stack: error.stack }
     );
-    return createResponse(500, 'Internal server error');
+    return createCORSResponse(500, 'Internal server error');
   }
+}
+
+/**
+ * Handles GET requests for testing
+ * @param {Object} e - The event object
+ * @return {Object} - Response object
+ */
+function doGet(e) {
+  return createCORSResponse(200, 'Webhook is working!');
+}
+
+/**
+ * Creates an HTTP response object with CORS headers
+ * @param {number} code - The HTTP status code (default: 200)
+ * @param {string} message - The response message (default: '')
+ * @return {Object} - The response object
+ */
+function createCORSResponse(code = 200, message = '') {
+  // Create the response content
+  const response = ContentService.createTextOutput(
+    JSON.stringify({ status: code, message: message })
+  );
+  
+  // Set MIME type and CORS headers
+  response.setMimeType(ContentService.MimeType.JSON);
+  response.setHeader('Access-Control-Allow-Origin', '*');
+  response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  
+  return response;
+}
+
+/**
+ * Creates an HTTP response object (legacy version for backward compatibility)
+ * @param {number} code - The HTTP status code
+ * @param {string} message - The response message
+ * @return {Object} - The response object
+ */
+function createResponse(code, message) {
+  return createCORSResponse(code, message);
 }
 
 /**
@@ -177,18 +222,6 @@ function isBotMentioned(message) {
   return message.text.includes(mentionText);
   
   // TODO: In Phase 2, enhance this to use the mention property from LINE API
-}
-
-/**
- * Creates an HTTP response object
- * @param {number} code - The HTTP status code
- * @param {string} message - The response message
- * @return {Object} - The response object
- */
-function createResponse(code, message) {
-  return ContentService
-    .createTextOutput(JSON.stringify({ status: code, message: message }))
-    .setMimeType(ContentService.MimeType.JSON);
 }
 
 // --- Spreadsheet Utility Functions ---
